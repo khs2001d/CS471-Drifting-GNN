@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import numpy as np
-import pandas as pd
 from timeit import default_timer as timer
 
 
@@ -223,4 +222,3 @@ if __name__ == "__main__":
 
     mis = calc_mis(target, label)
     print('mis:', mis)
-

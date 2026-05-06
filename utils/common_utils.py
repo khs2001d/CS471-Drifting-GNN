@@ -1,7 +1,10 @@
 # -*- coding: utf-8 -*-
 import numpy as np
-import pandas as pd
 import scipy.sparse as sp
+try:
+    import pandas as pd
+except ImportError:
+    pd = None
 
 import os
 import torch
@@ -72,16 +75,17 @@ def save2file_meta(params, file_name, head):
         csv_file.writerow(head)
         f.close()
 
-    df = pd.read_csv(file_name, encoding='utf-8')
-    old_head = df.columns
-    if len(set(head)) > len(set(old_head)):
-        f = open(file_name, "w", newline='\n')
-        csv_file = csv.writer(f)
-        csv_file.writerow(head) # write new head
-        for idx, data_df in df.iterrows():
-            data = [data_df[k] if k in old_head else -1 for k in head]
-            csv_file.writerow(data)
-        f.close()
+    if pd is not None:
+        df = pd.read_csv(file_name, encoding='utf-8')
+        old_head = df.columns
+        if len(set(head)) > len(set(old_head)):
+            f = open(file_name, "w", newline='\n')
+            csv_file = csv.writer(f)
+            csv_file.writerow(head) # write new head
+            for idx, data_df in df.iterrows():
+                data = [data_df[k] if k in old_head else -1 for k in head]
+                csv_file.writerow(data)
+            f.close()
 
     with open(file_name, "a", newline='\n', encoding='utf-8') as file:
         csv_file = csv.writer(file)
@@ -220,7 +224,6 @@ def draw_predicted_distribution(samples, target, observed_flag, evaluate_flag, c
     # fig.tight_layout()
     # plt.subplots_adjust(wspace=0, hspace=1)
     return fig, axes
-
 
 
 

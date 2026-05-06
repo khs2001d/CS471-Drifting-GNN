@@ -1,6 +1,5 @@
 # -*- coding: utf-8 -*-
 import numpy as np
-import pandas as pd
 from torch.utils.data import Dataset
 
 def search_recent_data(train, label_start_idx, T_p, T_h):

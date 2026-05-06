@@ -13,6 +13,7 @@ from utils.common_utils import dir_check, to_device, ws, unfold_dict, dict_merge
 
 from algorithm.dataset import CleanDataset, TrafficDataset
 from algorithm.diffstg.model import DiffSTG, save2file
+from algorithm.diffstg.checkpoint import save_teacher_checkpoint
 
 def setup_seed(seed):
     import random
@@ -33,6 +34,15 @@ except:
 def get_params():
     parser = argparse.ArgumentParser(description='Entry point of the code')
 
+    def str2bool(v):
+        if isinstance(v, bool):
+            return v
+        if str(v).lower() in ('yes', 'true', 't', '1', 'y'):
+            return True
+        if str(v).lower() in ('no', 'false', 'f', '0', 'n'):
+            return False
+        raise argparse.ArgumentTypeError('Boolean value expected.')
+
     # model
     parser.add_argument("--epsilon_theta", type=str, default='UGnet')
     parser.add_argument("--hidden_size", type=int, default=32)
@@ -42,18 +52,23 @@ def get_params():
     parser.add_argument("--sample_steps", type=int, default=200)  # sample_steps
     parser.add_argument("--ss", type=str, default='ddpm') #help='sample strategy', ddpm, multi_diffusion, one_diffusion
     parser.add_argument("--T_h", type=int, default=12)
+    parser.add_argument("--T_p", type=int, default=None)
 
     # eval
     parser.add_argument('--n_samples', type=int, default=8)
 
     # train
-    parser.add_argument("--is_train", type=bool, default=True) # train or evaluate
+    parser.add_argument("--is_train", type=str2bool, default=True) # train or evaluate
     parser.add_argument("--data", type=str, default='PEMS08')
     parser.add_argument("--mask_ratio", type=float, default=0.0) # mask of history data
-    parser.add_argument("--is_test", type=bool, default=True)
-    parser.add_argument("--nni", type=bool, default=False)
+    parser.add_argument("--is_test", type=str2bool, default=True)
+    parser.add_argument("--nni", type=str2bool, default=False)
     parser.add_argument("--lr", type=float, default=0.002)
     parser.add_argument("--batch_size", type=int, default=8)
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--teacher_checkpoint_path", type=str, default=None)
+    parser.add_argument("--max_train_batches", type=int, default=None)
+    parser.add_argument("--max_eval_batches", type=int, default=None)
 
     args, _ = parser.parse_known_args()
     return args
@@ -150,7 +165,7 @@ def default_config(data='AIR_BJ'):
         os.makedirs(config.PATH_FORECAST)
     return config
 
-def evals(model, data_loader, epoch, metric, config, clean_data, mode='Test'):
+def evals(model, data_loader, epoch, metric, config, clean_data, mode='Test', max_batches=None):
     setup_seed(2022)
 
     y_pred, y_true, time_lst = [], [], []
@@ -160,6 +175,7 @@ def evals(model, data_loader, epoch, metric, config, clean_data, mode='Test'):
 
     samples, targets = [], []
     for i, batch in enumerate(data_loader):
+        if max_batches is not None and i >= max_batches: break
         if i > 0 and config.is_test: break
         time_start = timer()
 
@@ -255,11 +271,13 @@ def main(params: dict):
     config.lr = params['lr']
     config.batch_size = params['batch_size']
     config.mask_ratio = params['mask_ratio']
+    if params.get('epochs', None) is not None:
+        config.epoch = params['epochs']
 
     # model
     config.model.N = params['N']
     config.T_h = config.model.T_h = params['T_h']
-    config.T_p = config.model.T_p =  params['T_h']
+    config.T_p = config.model.T_p = params['T_p'] if params.get('T_p', None) is not None else params['T_h']
     config.model.epsilon_theta =  params['epsilon_theta']
     config.model.sample_steps = params['sample_steps']
     config.model.d_h = params['hidden_size']
@@ -269,6 +287,9 @@ def main(params: dict):
     config.model.beta_schedule = params["beta_schedule"]
     config.model.sample_strategy = params["ss"]
     config.n_samples = params['n_samples']
+    config.teacher_checkpoint_path = params.get('teacher_checkpoint_path', None)
+    config.max_train_batches = params.get('max_train_batches', None)
+    config.max_eval_batches = params.get('max_eval_batches', None)
 
     if config.model.sample_steps > config.model.N:
         print('sample steps large than N, exit')
@@ -347,6 +368,7 @@ def main(params: dict):
         n, avg_loss, time_lst = 0, 0, []
         # train diffusion model
         for i, batch in enumerate(train_loader):
+            if config.max_train_batches is not None and i >= config.max_train_batches: break
             if i > 3 and config.is_test:break
             time_start =  timer()
             future, history, pos_w, pos_d = batch # future:(B, T_p, V, F), history: (B, T_h, V, F)
@@ -386,18 +408,37 @@ def main(params: dict):
             pass
 
         if epoch >= config.start_epoch:
-            evals(model, val_loader, epoch, metrics_val, config, clean_data, mode='Val')
+            evals(model, val_loader, epoch, metrics_val, config, clean_data, mode='Val', max_batches=config.max_eval_batches)
             scheduler.step(metrics_val.metrics['mae'])
 
         if metrics_val.best_metrics['epoch'] == epoch:
             #print('[save model]>> ', model_path)
             torch.save(model, model_path)
+            if config.teacher_checkpoint_path:
+                scaler = {
+                    'mean': float(clean_data.mean),
+                    'std': float(clean_data.std),
+                    'data': config.data.name,
+                }
+                save_teacher_checkpoint(
+                    config.teacher_checkpoint_path,
+                    model,
+                    optimizer,
+                    epoch,
+                    metrics_val.best_metrics,
+                    params,
+                    config,
+                    scaler=scaler,
+                )
 
         if epoch - metrics_val.best_metrics['epoch'] > config.early_stop: break  # Early_stop
 
 
     try:
-        model = torch.load(model_path, map_location=config.device)
+        try:
+            model = torch.load(model_path, map_location=config.device, weights_only=False)
+        except TypeError:
+            model = torch.load(model_path, map_location=config.device)
         print('best model loaded from: <<', model_path)
     except Exception as err:
         print(err)
@@ -415,7 +456,7 @@ def main(params: dict):
         model.set_sample_strategy(sample_strategy)
 
         metrics_test = Metric(T_p=config.model.T_h + config.model.T_p)
-        evals(model, test_loader, epoch, metrics_test, config, clean_data, mode='test')
+        evals(model, test_loader, epoch, metrics_test, config, clean_data, mode='test', max_batches=config.max_eval_batches)
         message = f'sample_strategy:{sample_strategy}, sample_steps:{sample_steps} Final results in test:{metrics_test}\n'
         config.logger.write(message, is_terminal=True)
 
@@ -447,12 +488,27 @@ def main(params: dict):
 
 if __name__ == '__main__':
 
-    import nni
+    try:
+        import nni
+    except ImportError:
+        class _NNIFallback:
+            @staticmethod
+            def get_next_parameter():
+                return {}
+
+            @staticmethod
+            def report_intermediate_result(_):
+                return None
+
+            @staticmethod
+            def report_final_result(_):
+                return None
+        nni = _NNIFallback()
     import logging
 
     logger = logging.getLogger('training')
 
-    print('GPU:', torch.cuda.current_device())
+    print('GPU:', torch.cuda.current_device() if torch.cuda.is_available() else 'cpu')
     try:
         tuner_params = nni.get_next_parameter()
         logger.debug(tuner_params)
