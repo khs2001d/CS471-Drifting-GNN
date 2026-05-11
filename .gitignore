@@ -1,0 +1,35 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.ipynb_checkpoints/
+
+# Experiment outputs (large artifacts — back up separately)
+outputs/
+output/
+checkpoints/
+cache/
+logs/
+runs/
+wandb/
+
+# Dataset (large binary files — back up separately)
+data/dataset/
+data/raw/
+data/processed/
+
+# Model weights & arrays
+*.pt
+*.pth
+*.ckpt
+*.pkl
+*.npy
+*.npz
+
+# Generated documents
+*.pdf
+
+# OS
+.DS_Store
+Thumbs.db
