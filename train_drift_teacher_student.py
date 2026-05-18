@@ -8,7 +8,12 @@ from timeit import default_timer as timer
 import numpy as np
 import torch
 
-from algorithm.drifting.losses import rbf_drift_to_teacher_loss
+from algorithm.drifting.losses import (
+    combined_drift_diversity_loss,
+    combined_drift_diversity_noise_loss,
+    energy_distance_to_teacher_loss,
+    rbf_drift_to_teacher_loss,
+)
 from algorithm.drifting.student import DriftTeacherStudent
 from train import default_config, setup_seed
 
@@ -78,6 +83,40 @@ def to_device(batch, device):
     return {k: v.to(device) if torch.is_tensor(v) else v for k, v in batch.items()}
 
 
+
+
+def compute_student_loss(student, teacher_samples, args, z=None):
+    if args.loss_type == "drift":
+        return rbf_drift_to_teacher_loss(
+            student,
+            teacher_samples,
+            eta=args.eta,
+            sigma=args.sigma,
+        )
+    if args.loss_type == "drift_diversity":
+        return combined_drift_diversity_loss(
+            student,
+            teacher_samples,
+            eta=args.eta,
+            sigma=args.sigma,
+            lambda_diversity=args.lambda_diversity,
+        )
+    if args.loss_type == "energy":
+        return energy_distance_to_teacher_loss(student, teacher_samples)
+    if args.loss_type == "drift_diversity_noise":
+        if z is None:
+            raise ValueError("z is required for drift_diversity_noise")
+        return combined_drift_diversity_noise_loss(
+            student,
+            teacher_samples,
+            z=z,
+            eta=args.eta,
+            sigma=args.sigma,
+            lambda_diversity=args.lambda_diversity,
+            lambda_noise=args.lambda_noise,
+        )
+    raise ValueError(f"Unsupported loss_type: {args.loss_type}")
+
 def evaluate_loss(model, loader, args, device, max_batches=None):
     model.eval()
     total, n = 0.0, 0
@@ -87,13 +126,15 @@ def evaluate_loss(model, loader, args, device, max_batches=None):
             if max_batches is not None and i >= max_batches:
                 break
             batch = to_device(batch, device)
-            student = model(batch["x_masked"], batch["pos_w"], batch["pos_d"], args.num_student_samples)
-            loss, stats = rbf_drift_to_teacher_loss(
-                student,
-                batch["teacher_samples"],
-                eta=args.eta,
-                sigma=args.sigma,
-            )
+            z = None
+            if args.loss_type == "drift_diversity_noise":
+                B, F, V, _ = batch["x_masked"].shape
+                T_p = batch["teacher_samples"].shape[2]
+                z = torch.randn(B, args.num_student_samples, F, V, T_p, device=device)
+                student = model(batch["x_masked"], batch["pos_w"], batch["pos_d"], args.num_student_samples, z=z)
+            else:
+                student = model(batch["x_masked"], batch["pos_w"], batch["pos_d"], args.num_student_samples)
+            loss, stats = compute_student_loss(student, batch["teacher_samples"], args, z=z)
             total += loss.item()
             n += 1
             last_stats = stats
@@ -140,6 +181,10 @@ def train(args):
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
 
     model = DriftTeacherStudent(config.model).to(device)
+    if args.init_checkpoint:
+        checkpoint = torch.load(args.init_checkpoint, map_location=device)
+        model.load_state_dict(checkpoint["model_state_dict"], strict=True)
+        print(f"loaded_init_checkpoint={args.init_checkpoint}")
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
 
     best_val_loss = float("inf")
@@ -147,7 +192,11 @@ def train(args):
     os.makedirs(args.output_dir, exist_ok=True)
 
     print(f"train_examples={len(train_dataset)} val_examples={len(val_dataset)}")
-    print(f"NFE=1 num_student_samples={args.num_student_samples} eta={args.eta} sigma={args.sigma or 'auto'}")
+    print(
+        f"NFE=1 loss_type={args.loss_type} num_student_samples={args.num_student_samples} "
+        f"eta={args.eta} sigma={args.sigma or 'auto'} "
+        f"lambda_diversity={args.lambda_diversity} lambda_noise={args.lambda_noise}"
+    )
 
     for epoch in range(args.epochs):
         model.train()
@@ -157,13 +206,15 @@ def train(args):
             if args.max_train_batches is not None and i >= args.max_train_batches:
                 break
             batch = to_device(batch, device)
-            student = model(batch["x_masked"], batch["pos_w"], batch["pos_d"], args.num_student_samples)
-            loss, stats = rbf_drift_to_teacher_loss(
-                student,
-                batch["teacher_samples"],
-                eta=args.eta,
-                sigma=args.sigma,
-            )
+            z = None
+            if args.loss_type == "drift_diversity_noise":
+                B, F, V, _ = batch["x_masked"].shape
+                T_p = batch["teacher_samples"].shape[2]
+                z = torch.randn(B, args.num_student_samples, F, V, T_p, device=device)
+                student = model(batch["x_masked"], batch["pos_w"], batch["pos_d"], args.num_student_samples, z=z)
+            else:
+                student = model(batch["x_masked"], batch["pos_w"], batch["pos_d"], args.num_student_samples)
+            loss, stats = compute_student_loss(student, batch["teacher_samples"], args, z=z)
             optimizer.zero_grad()
             loss.backward()
             optimizer.step()
@@ -177,10 +228,15 @@ def train(args):
                     f"teacher={tuple(batch['teacher_samples'].shape)} "
                     f"student={tuple(student.shape)}"
                 )
-            print(
-                f"epoch={epoch + 1} batch={i + 1} "
-                f"loss={loss.item():.6f} sigma={stats['sigma']:.6f} drift_norm={stats['drift_norm']:.6f}"
-            )
+            if (i + 1) % args.log_interval == 0 or i == 0:
+                print(
+                    f"epoch={epoch + 1} batch={i + 1} "
+                    f"loss={loss.item():.6f} "
+                    f"student_div={stats.get('student_diversity', 0.0):.6f} "
+                    f"teacher_div={stats.get('teacher_diversity', 0.0):.6f} "
+                    f"div_ratio={stats.get('diversity_ratio', 0.0):.4f} "
+                    f"noise_corr={stats.get('noise_output_corr', 0.0):.4f}"
+                )
 
         train_loss = running / max(n, 1)
         val_loss, val_stats = evaluate_loss(model, val_loader, args, device, args.max_eval_batches)
@@ -198,16 +254,21 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train one-step Drift-to-teacher student from cached teacher samples.")
     parser.add_argument("--cache_dir", type=str, default="outputs/pems08_teacher_cache")
     parser.add_argument("--output_dir", type=str, default="outputs/pems08_student_drift_teacher")
+    parser.add_argument("--init_checkpoint", type=str, default=None)
     parser.add_argument("--epochs", type=int, default=50)
     parser.add_argument("--batch_size", type=int, default=16)
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--num_student_samples", type=int, default=8)
     parser.add_argument("--eta", type=float, default=0.1)
     parser.add_argument("--sigma", type=float, default=None)
+    parser.add_argument("--loss_type", type=str, default="drift", choices=["drift", "drift_diversity", "energy", "drift_diversity_noise"])
+    parser.add_argument("--lambda_diversity", type=float, default=0.1)
+    parser.add_argument("--lambda_noise", type=float, default=1.0)
     parser.add_argument("--max_train_batches", type=int, default=None)
     parser.add_argument("--max_eval_batches", type=int, default=None)
     parser.add_argument("--seed", type=int, default=2022)
     parser.add_argument("--num_threads", type=int, default=2)
+    parser.add_argument("--log_interval", type=int, default=1)
     return parser.parse_args()
 
 

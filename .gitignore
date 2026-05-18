@@ -1,4 +1,6 @@
 # Python
+.venv/
+venv/
 __pycache__/
 *.pyc
 *.pyo
@@ -13,6 +15,7 @@ cache/
 logs/
 runs/
 wandb/
+backups/
 
 # Dataset (large binary files — back up separately)
 data/dataset/
