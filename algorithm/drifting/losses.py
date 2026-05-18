@@ -79,3 +79,88 @@ def rbf_drift_to_teacher_loss(
         "num_teacher_samples": K,
     }
     return loss, stats
+
+
+def _pairwise_diversity(samples: torch.Tensor) -> torch.Tensor:
+    flat = samples.detach().flatten(2)
+    if flat.shape[1] < 2:
+        return flat.new_tensor(0.0)
+    return torch.cdist(flat, flat, p=2).mean()
+
+
+def antisymmetric_drift_to_teacher_loss(
+    student_samples: torch.Tensor,
+    teacher_samples: torch.Tensor,
+    eta: float = 0.1,
+    sigma: Optional[float] = None,
+    eps: float = 1e-8,
+) -> Tuple[torch.Tensor, dict]:
+    """
+    Anti-symmetric Drift-to-teacher particle loss.
+
+    This follows the Drifting identity:
+      teacher samples are positive particles,
+      student samples are generated/negative particles,
+      V = V_pos - V_neg,
+      loss = ||y - stop_gradient(y + eta * V)||^2.
+
+    The existing RBF bandwidth path is intentionally reused so the only
+    first-pass algorithmic change is adding the negative student field.
+    """
+    assert student_samples.dim() == teacher_samples.dim(), "student and teacher samples need matching ranks"
+    assert student_samples.shape[0] == teacher_samples.shape[0], "batch size mismatch"
+    assert student_samples.shape[2:] == teacher_samples.shape[2:], "sample trailing shape mismatch"
+
+    y = student_samples
+    t = teacher_samples.detach()
+    B, S = y.shape[:2]
+    K = t.shape[1]
+    y_flat = y.detach().flatten(2)
+    t_flat = t.flatten(2)
+
+    if sigma is None or sigma <= 0:
+        sigma_t = auto_sigma(y, t, eps=eps).to(device=y.device, dtype=y.dtype)
+    else:
+        sigma_t = torch.tensor(float(sigma), device=y.device, dtype=y.dtype)
+    sigma2 = torch.clamp(sigma_t.pow(2), min=eps)
+
+    # Positive field: attraction from student particles to teacher particles.
+    pos_dist2 = torch.cdist(y_flat, t_flat, p=2).pow(2)
+    pos_weights = torch.exp(-pos_dist2 / (2.0 * sigma2))
+    pos_weights = pos_weights / (pos_weights.sum(dim=2, keepdim=True) + eps)
+    teacher_flat = t_flat[:, None, :, :]
+    student_to_teacher_flat = y_flat[:, :, None, :]
+    pos_drift_flat = (pos_weights[..., None] * (teacher_flat - student_to_teacher_flat)).sum(dim=2)
+
+    # Negative field: mean-shift toward the generated/student distribution.
+    neg_dist2 = torch.cdist(y_flat, y_flat, p=2).pow(2)
+    neg_weights = torch.exp(-neg_dist2 / (2.0 * sigma2))
+    neg_weights = neg_weights / (neg_weights.sum(dim=2, keepdim=True) + eps)
+    negative_flat = y_flat[:, None, :, :]
+    student_to_negative_flat = y_flat[:, :, None, :]
+    neg_drift_flat = (neg_weights[..., None] * (negative_flat - student_to_negative_flat)).sum(dim=2)
+
+    drift = (pos_drift_flat - neg_drift_flat).reshape_as(y)
+    target = (y + eta * drift).detach()
+    loss = F.mse_loss(y, target)
+
+    student_diversity = _pairwise_diversity(y)
+    teacher_diversity = _pairwise_diversity(t)
+    diversity_ratio = student_diversity / torch.clamp(teacher_diversity, min=eps)
+
+    stats = {
+        "loss": float(loss.detach().item()),
+        "sigma": float(sigma_t.detach().item()),
+        "drift_norm": float(drift.detach().flatten(2).norm(dim=2).mean().item()),
+        "positive_drift_norm": float(pos_drift_flat.detach().norm(dim=2).mean().item()),
+        "negative_drift_norm": float(neg_drift_flat.detach().norm(dim=2).mean().item()),
+        "student_diversity": float(student_diversity.item()),
+        "teacher_diversity": float(teacher_diversity.item()),
+        "diversity_ratio": float(diversity_ratio.item()),
+        "student_mean": float(y.detach().mean().item()),
+        "teacher_mean": float(t.mean().item()),
+        "batch_size": B,
+        "num_student_samples": S,
+        "num_teacher_samples": K,
+    }
+    return loss, stats
