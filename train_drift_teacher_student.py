@@ -8,7 +8,11 @@ from timeit import default_timer as timer
 import numpy as np
 import torch
 
-from algorithm.drifting.losses import antisymmetric_drift_to_teacher_loss, rbf_drift_to_teacher_loss
+from algorithm.drifting.losses import (
+    antisymmetric_drift_to_teacher_loss,
+    combined_antisymmetric_diversity_loss,
+    rbf_drift_to_teacher_loss,
+)
 from algorithm.drifting.student import DriftTeacherStudent
 from train import default_config, setup_seed
 
@@ -93,12 +97,23 @@ def compute_student_loss(student, teacher_samples, args):
             eta=args.eta,
             sigma=args.sigma,
         )
+    if args.loss_type == "antisymmetric_diversity":
+        return combined_antisymmetric_diversity_loss(
+            student,
+            teacher_samples,
+            eta=args.eta,
+            sigma=args.sigma,
+            lambda_diversity=args.lambda_diversity,
+        )
     raise ValueError(f"Unsupported loss_type: {args.loss_type}")
 
 
 def format_loss_stats(stats):
     fields = [
         ("sigma", ".6f"),
+        ("drift_loss", ".6f"),
+        ("diversity_loss", ".6f"),
+        ("lambda_diversity", ".6f"),
         ("drift_norm", ".6f"),
         ("positive_drift_norm", ".6f"),
         ("negative_drift_norm", ".6f"),
@@ -170,7 +185,16 @@ def train(args):
     val_loader = torch.utils.data.DataLoader(val_dataset, batch_size=args.batch_size, shuffle=False)
 
     model = DriftTeacherStudent(config.model).to(device)
+    if args.init_checkpoint:
+        init_checkpoint = torch.load(args.init_checkpoint, map_location=device)
+        model.load_state_dict(init_checkpoint["model_state_dict"], strict=True)
+        print(f"loaded_init_checkpoint={args.init_checkpoint}")
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
+    if args.resume_optimizer and args.init_checkpoint:
+        opt_state = init_checkpoint.get("optimizer_state_dict")
+        if opt_state is not None:
+            optimizer.load_state_dict(opt_state)
+            print("loaded_init_optimizer_state=True")
 
     best_val_loss = float("inf")
     ckpt_path = os.path.join(args.output_dir, "checkpoints", "best.pt")
@@ -179,7 +203,7 @@ def train(args):
     print(f"train_examples={len(train_dataset)} val_examples={len(val_dataset)}")
     print(
         f"NFE=1 loss_type={args.loss_type} num_student_samples={args.num_student_samples} "
-        f"eta={args.eta} sigma={args.sigma or 'auto'}"
+        f"eta={args.eta} sigma={args.sigma or 'auto'} lambda_diversity={args.lambda_diversity}"
     )
 
     for epoch in range(args.epochs):
@@ -232,7 +256,10 @@ def parse_args():
     parser.add_argument("--num_student_samples", type=int, default=8)
     parser.add_argument("--eta", type=float, default=0.1)
     parser.add_argument("--sigma", type=float, default=None)
-    parser.add_argument("--loss_type", type=str, default="attraction", choices=["attraction", "antisymmetric"])
+    parser.add_argument("--loss_type", type=str, default="attraction", choices=["attraction", "antisymmetric", "antisymmetric_diversity"])
+    parser.add_argument("--lambda_diversity", type=float, default=0.1)
+    parser.add_argument("--init_checkpoint", type=str, default=None)
+    parser.add_argument("--resume_optimizer", action="store_true")
     parser.add_argument("--max_train_batches", type=int, default=None)
     parser.add_argument("--max_eval_batches", type=int, default=None)
     parser.add_argument("--seed", type=int, default=2022)
