@@ -33,7 +33,7 @@ def diversity_matching_loss(
     eps: float = 1e-8,
 ) -> Tuple[torch.Tensor, dict]:
     student_div = sample_diversity_l1(student_samples, eps=eps)
-    teacher_div = sample_diversity_l1(teacher_samples.detach(), eps=eps)
+    teacher_div = sample_diversity_l1(teacher_samples.detach().to(device=student_samples.device, dtype=student_samples.dtype), eps=eps)
     deficit = F.relu(teacher_div - student_div)
     loss = (deficit / teacher_div.detach().clamp_min(eps)).pow(2)
     stats = {
@@ -55,7 +55,7 @@ def energy_distance_to_teacher_loss(
     assert student_samples.shape[2:] == teacher_samples.shape[2:], 'sample trailing shape mismatch'
 
     y = _flatten_samples(student_samples)
-    t = _flatten_samples(teacher_samples.detach())
+    t = _flatten_samples(teacher_samples.detach()).to(device=y.device, dtype=y.dtype)
 
     cross = torch.cdist(y, t, p=2).mean()
     yy = torch.cdist(y, y, p=2).mean()
@@ -125,7 +125,7 @@ def noise_conditioning_loss(
     # The teacher particle diversity sets the output distance scale.
     y_dist = _pairwise_l1_matrix(student_samples)
     z_dist = _pairwise_l1_matrix(z)
-    teacher_div = sample_diversity_l1(teacher_samples.detach(), eps=eps)
+    teacher_div = sample_diversity_l1(teacher_samples.detach().to(device=student_samples.device, dtype=student_samples.dtype), eps=eps)
 
     y_vals = _off_diagonal_values(y_dist)
     z_vals = _off_diagonal_values(z_dist).detach()
