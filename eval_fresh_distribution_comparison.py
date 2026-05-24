@@ -6,7 +6,6 @@ import os
 
 import numpy as np
 import torch
-from scipy.optimize import linear_sum_assignment
 
 from eval_teacher_pems08 import masked_mae_np, masked_rmse_np, sample_crps_np
 
@@ -23,7 +22,6 @@ COLUMNS = [
     "teacher100_diversity",
     "relative_diversity_vs_teacher100",
     "EnergyDistance_to_teacher100",
-    "EMD_to_teacher100",
     "inference_time_total_sec",
     "inference_time_per_batch_sec",
     "speedup_vs_teacher100",
@@ -62,11 +60,6 @@ def pairwise_l1(a, b):
     return np.abs(af[:, None, :] - bf[None, :, :]).mean(axis=2)
 
 
-def emd_l1(cost):
-    row_ind, col_ind = linear_sum_assignment(cost)
-    return float(cost[row_ind, col_ind].mean())
-
-
 def condition_distribution_metrics(model_samples, teacher_samples):
     cross = pairwise_l1(model_samples, teacher_samples)
     mm = pairwise_l1(model_samples, model_samples)
@@ -74,8 +67,7 @@ def condition_distribution_metrics(model_samples, teacher_samples):
     model_div = offdiag_mean(mm)
     teacher_div = offdiag_mean(tt)
     energy = float(2.0 * cross.mean() - model_div - teacher_div)
-    emd = emd_l1(cross)
-    return energy, emd, model_div, teacher_div
+    return energy, model_div, teacher_div
 
 
 def update_gt_acc(acc, samples, target):
@@ -99,7 +91,7 @@ def evaluate_model(model_dir, teacher_dir, max_eval_batches=None, force_self_ref
     if len(model_shards) != len(teacher_shards):
         raise ValueError(f"Shard count mismatch: model={len(model_shards)} teacher={len(teacher_shards)}")
 
-    dist = {"energy": [], "emd": [], "model_div": [], "teacher_div": []}
+    dist = {"energy": [], "model_div": [], "teacher_div": []}
     gt = {"crps_sum": 0.0, "mae_sum": 0.0, "rmse_sq_sum": 0.0, "n_examples": 0}
     checked = 0
 
@@ -121,14 +113,12 @@ def evaluate_model(model_dir, teacher_dir, max_eval_batches=None, force_self_ref
         for b in range(m_samples.shape[0]):
             if force_self_reference:
                 energy = 0.0
-                emd = 0.0
-                div = condition_distribution_metrics(t_samples[b], t_samples[b])[2]
+                div = condition_distribution_metrics(t_samples[b], t_samples[b])[1]
                 model_div = div
                 teacher_div = div
             else:
-                energy, emd, model_div, teacher_div = condition_distribution_metrics(m_samples[b], t_samples[b])
+                energy, model_div, teacher_div = condition_distribution_metrics(m_samples[b], t_samples[b])
             dist["energy"].append(energy)
-            dist["emd"].append(emd)
             dist["model_div"].append(model_div)
             dist["teacher_div"].append(teacher_div)
             checked += 1
@@ -161,7 +151,6 @@ def evaluate_model(model_dir, teacher_dir, max_eval_batches=None, force_self_ref
         "teacher100_diversity": teacher_div,
         "relative_diversity_vs_teacher100": float(sample_div / teacher_div) if teacher_div > 0 else None,
         "EnergyDistance_to_teacher100": float(np.mean(dist["energy"])),
-        "EMD_to_teacher100": float(np.mean(dist["emd"])),
         "inference_time_total_sec": total_time,
         "inference_time_per_batch_sec": float(total_time / max(num_batches, 1)),
         "speedup_vs_teacher100": None,
@@ -204,11 +193,10 @@ def main(args):
         t = row["inference_time_total_sec"]
         row["speedup_vs_teacher100"] = float(teacher_time / t) if teacher_time and t else None
     write_results(rows, args.output_csv, args.output_json)
-    print("model,Energy,EMD,Div,RelDiv,CRPS,MAE,RMSE,time,speedup")
+    print("model,Energy,Div,RelDiv,CRPS,MAE,RMSE,time,speedup")
     for row in rows:
         print(
             f"{row['model']},{row['EnergyDistance_to_teacher100']:.6f},"
-            f"{row['EMD_to_teacher100']:.6f},"
             f"{row['sample_diversity']:.6f},{row['relative_diversity_vs_teacher100']:.6f},"
             f"{row['CRPS']:.6f},{row['MAE']:.6f},{row['RMSE']:.6f},"
             f"{row['inference_time_total_sec']:.4f},{row['speedup_vs_teacher100']:.4f}"

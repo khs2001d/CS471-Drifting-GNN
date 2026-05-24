@@ -209,7 +209,7 @@ python train_drift_teacher_student.py \
   --init_checkpoint outputs/pems08_student_drift_teacher_s32_antisymmetric/checkpoints/best.pt \
   --epochs 20 \
   --batch_size 16 \
-  --lr 1e-5 \
+  --lr 5e-5 \
   --num_student_samples 8 \
   --eta 0.1 \
   --loss_type energy \
@@ -327,7 +327,6 @@ python eval_fresh_distribution_comparison.py \
 - `teacher100_diversity`: Sample diversity of the 100-step teacher reference.
 - `relative_diversity_vs_teacher100`: Model diversity divided by Teacher100 diversity. Values close to 1 indicate that the model preserves the teacher's sample diversity.
 - `EnergyDistance_to_teacher100`: Energy distance between the model sample distribution and the Teacher100 sample distribution. Lower is closer to the Teacher100 reference.
-- `EMD_to_teacher100`: Exact matching Earth Mover's Distance between generated samples and Teacher100 samples using the same L1 ground cost. Lower is closer to the Teacher100 reference.
 - `NFE`: Number of Function Evaluations. Teacher100 uses 100, Teacher40 uses 40, and the one-step student uses 1.
 - `inference_time_total_sec`: Total inference time on the test split.
 - `speedup_vs_teacher100`: Inference speedup relative to Teacher100.

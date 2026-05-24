@@ -105,7 +105,7 @@ def antisymmetric_drift_to_teacher_loss(
         sigma_t = torch.tensor(float(sigma), device=y.device, dtype=y.dtype)
     sigma2 = torch.clamp(sigma_t.pow(2), min=eps)
 
-    # Positive field: attraction from student particles to teacher particles.
+    # Positive field: mean-shift from student particles toward teacher particles.
     pos_dist2 = torch.cdist(y_flat, t_flat, p=2).pow(2)
     pos_weights = torch.exp(-pos_dist2 / (2.0 * sigma2))
     pos_weights = pos_weights / (pos_weights.sum(dim=2, keepdim=True) + eps)
