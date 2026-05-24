@@ -7,8 +7,9 @@ cd "${PROJECT_DIR}"
 
 CACHE_DIR="${CACHE_DIR:-outputs/pems08_teacher_cache}"
 OUTPUT_DIR="${OUTPUT_DIR:-outputs/pems08_student_drift_teacher}"
+PYTHON="${PYTHON:-python}"
 
-python train_drift_teacher_student.py \
+"${PYTHON}" train_drift_teacher_student.py \
   --cache_dir "${CACHE_DIR}" \
   --output_dir "${OUTPUT_DIR}" \
   --epochs 50 \

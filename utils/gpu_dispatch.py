@@ -3,6 +3,8 @@ import numpy as np
 
 from utils.common_utils import ws, dir_check
 import json, os
+import shutil
+import subprocess
 
 '''
 This module is proposed for GPU dispatching. 
@@ -66,8 +68,13 @@ class GPU():
 
     def update_info_dict(self):
         stat_path = self.log_file + '/gpustat.txt'
-        cmds = [f'nvidia-smi > {stat_path}']
-        cmd_lst(cmds)
+        if shutil.which('nvidia-smi') is None:
+            self.info_dict = {}
+            self.save()
+            return self.info_dict
+
+        with open(stat_path, 'w') as f:
+            subprocess.run(['nvidia-smi'], stdout=f, stderr=subprocess.DEVNULL, check=True)
 
         self.info_dict = self.get_nvidia_smi(stat_path)
 
@@ -103,7 +110,7 @@ class GPU():
             id = random.choice(useful_id)
             return id
         else:
-            print('None gpu is avalible, try again later')
+            print('No available GPU found for auto-dispatch; using the default device.')
             return None
 
 

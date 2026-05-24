@@ -10,8 +10,9 @@ OUTPUT_ROOT="${OUTPUT_ROOT:-outputs/pems08_teacher_cache}"
 NUM_TEACHER_SAMPLES="${NUM_TEACHER_SAMPLES:-8}"
 SAMPLE_STEPS="${SAMPLE_STEPS:-100}"
 BATCH_SIZE="${BATCH_SIZE:-16}"
+PYTHON="${PYTHON:-python}"
 
-python generate_teacher_cache.py \
+"${PYTHON}" generate_teacher_cache.py \
   --checkpoint "${CHECKPOINT}" \
   --output_root "${OUTPUT_ROOT}" \
   --splits train val \

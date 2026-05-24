@@ -4,8 +4,9 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
 cd "${PROJECT_DIR}"
+PYTHON="${PYTHON:-python}"
 
-python train.py \
+"${PYTHON}" train.py \
   --data PEMS08 \
   --epsilon_theta UGnet \
   --N 100 \
